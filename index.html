@@ -271,22 +271,32 @@ details p{margin:0 0 14px}
 const $=s=>document.querySelector(s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const MIME={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',ico:'image/x-icon',avif:'image/avif',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',otf:'font/otf',mp4:'video/mp4',webm:'video/webm',mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',json:'application/json'};
 const EXT=/^(https?:|data:|blob:|mailto:|tel:|\/\/|#|javascript:|about:)/i;
-let files={},cache=new Map(),inl=0,warns=[],outHtml='',outName='site.html';
+let files={},lower={},ROOT='',cache=new Map(),inl=0,warns=[],outHtml='',outName='site.html';
+const lk=p=>files[p]?p:(lower[(p||'').toLowerCase()]||null);
+function findAsset(base,ref){
+ const r=ref.trim().split('#')[0].split('?')[0];if(!r)return null;
+ let p=lk(resolve(base,r));if(p)return p;
+ let q=r;try{q=decodeURIComponent(r)}catch(e){}q=norm(q.replace(/^\//,''));if(!q)return null;
+ for(const c of [q,ROOT&&ROOT+'/'+q,ROOT&&ROOT+'/public/'+q,'public/'+q]){if(c&&(p=lk(c)))return p}
+ const suf='/'+q.toLowerCase();
+ for(const k of Object.keys(files)){if(('/'+k.toLowerCase()).endsWith(suf))return k}
+ const bn=q.split('/').pop().toLowerCase(),hit=Object.keys(files).filter(k=>k.split('/').pop().toLowerCase()===bn);
+ return hit.length===1?hit[0]:null}
 
 const fmt=n=>n>1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(1)+' KB';
 const norm=p=>{const o=[];for(const s of p.split('/')){if(!s||s==='.')continue;s==='..'?o.pop():o.push(s)}return o.join('/')};
 const dirOf=p=>p.includes('/')?p.slice(0,p.lastIndexOf('/')):'';
 function resolve(base,ref){ref=ref.trim().split('#')[0].split('?')[0];try{ref=decodeURIComponent(ref)}catch(e){}return ref.startsWith('/')?norm(ref):norm(dirOf(base)+'/'+ref)}
 function log(t,w){const d=document.createElement('div');if(w)d.className='w';d.textContent=(w?'! ':'› ')+t;$('#log').appendChild(d);$('#log').scrollTop=1e5}
-async function dataURI(p){if(cache.has(p))return cache.get(p);const f=files[p];if(!f){warns.push(p);return null}
+async function dataURI(p){p=lk(p)||p;if(cache.has(p))return cache.get(p);const f=files[p];if(!f){warns.push(p);return null}
  const b=await f.async('base64'),e=p.split('.').pop().toLowerCase();inl++;const u=`data:${MIME[e]||'application/octet-stream'};base64,${b}`;cache.set(p,u);return u}
 
 async function inlineCSS(t,path,depth=0){
  for(const m of [...t.matchAll(/@import\s+(?:url\()?\s*['"]?([^'")\s;]+)['"]?\s*\)?[^;]*;/g)]){
-  if(EXT.test(m[1]))continue;const p=resolve(path,m[1]);
-  if(files[p]&&depth<4){inl++;t=t.split(m[0]).join(await inlineCSS(await files[p].async('string'),p,depth+1))}}
+  if(EXT.test(m[1]))continue;const p=findAsset(path,m[1]);
+  if(p&&depth<4){inl++;t=t.split(m[0]).join(await inlineCSS(await files[p].async('string'),p,depth+1))}}
  for(const m of [...new Map([...t.matchAll(/url\(\s*(['"]?)([^'")]+?)\1\s*\)/g)].map(m=>[m[0],m])).values()]){
-  if(EXT.test(m[2]))continue;const d=await dataURI(resolve(path,m[2]));if(d)t=t.split(m[0]).join(`url("${d}")`)}
+  if(EXT.test(m[2]))continue;const fp=findAsset(path,m[2]);if(!fp){warns.push(m[2]);continue}const fr=(m[2].match(/#.*$/)||[''])[0];const d=await dataURI(fp);if(d)t=t.split(m[0]).join(`url("${d}${fr}")`)}
  return t}
 
 
@@ -301,7 +311,9 @@ function vfsShim(V){
  var f=window.fetch;if(f)window.fetch=function(u,o){var k=K(typeof u==='string'?u:u&&u.url);return f.call(this,k||u,o)};
  var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){var a=[].slice.call(arguments),k=K(u);if(k)a[1]=k;return xo.apply(this,a)};
  [HTMLImageElement,HTMLMediaElement,HTMLSourceElement,HTMLEmbedElement].forEach(function(C){var d=Object.getOwnPropertyDescriptor(C.prototype,'src');if(d&&d.set)Object.defineProperty(C.prototype,'src',{configurable:true,enumerable:d.enumerable,get:d.get,set:function(v){d.set.call(this,K(v)||v)}})});
- var sa=Element.prototype.setAttribute;Element.prototype.setAttribute=function(n,v){if((n==='src'||n==='poster')&&/^(IMG|SOURCE|VIDEO|AUDIO|EMBED)$/.test(this.tagName))v=K(v)||v;return sa.call(this,n,v)}}
+ var sa=Element.prototype.setAttribute;Element.prototype.setAttribute=function(n,v){var t=this.tagName;if((n==='src'||n==='poster')&&/^(IMG|SOURCE|VIDEO|AUDIO|EMBED)$/.test(t))v=K(v)||v;else if((n==='href'||n==='xlink:href')&&t==='image')v=K(v)||v;else if(n==='data'&&t==='OBJECT')v=K(v)||v;return sa.call(this,n,v)};
+ function fixStyle(el){try{var s=el.getAttribute&&el.getAttribute('style');if(!s||s.indexOf('url(')<0)return;var n=s.replace(/url\(\s*(['"]?)([^'")]+?)\1\s*\)/g,function(m,q,u){var k=K(u);return k?'url("'+k+'")':m});if(n!==s)sa.call(el,'style',n)}catch(e){}}
+ try{new MutationObserver(function(ms){ms.forEach(function(m){if(m.type==='attributes')fixStyle(m.target);else m.addedNodes.forEach(function(n){if(n.nodeType===1){fixStyle(n);n.querySelectorAll&&n.querySelectorAll('[style*="url("]').forEach(fixStyle)}})})}).observe(document,{subtree:true,childList:true,attributes:true,attributeFilter:['style']})}catch(e){}}
 
 async function loadBabel(){
  if(window.Babel)return;
@@ -367,16 +379,16 @@ async function convert(file){
   setStep(0);await sleep(350);
   if(typeof JSZip==='undefined')throw new Error('Internet on karo: converter library load nahi hui.');
   const zip=await JSZip.loadAsync(file);
-  zip.forEach((p,e)=>{const b=p.split('/').pop();if(!e.dir&&!p.startsWith('__MACOSX')&&!b.startsWith('._')&&b!=='.DS_Store')files[p]=e});
+  zip.forEach((p,e)=>{const b=p.split('/').pop();if(!e.dir&&!p.startsWith('__MACOSX')&&!b.startsWith('._')&&b!=='.DS_Store')files[p]=e;lower[p.toLowerCase()]=p});
   const total=Object.keys(files).length;log(total+' files found');
   setStep(1);await sleep(350);
   const htmls=Object.keys(files).filter(p=>/\.html?$/i.test(p));
   if(!htmls.length)throw new Error('No HTML file found inside this zip.');
   const score=p=>p.split('/').length*10+(/(^|\/)index\.html?$/i.test(p)?0:6)-(/(^|\/)(dist|build)\//i.test(p)?15:0);
-  htmls.sort((a,b)=>score(a)-score(b));const main=htmls[0],root=dirOf(main);
+  htmls.sort((a,b)=>score(a)-score(b));const main=htmls[0],root=dirOf(main);ROOT=root;
   log('Entry page: '+main);
   const doc=new DOMParser().parseFromString(await files[main].async('string'),'text/html');
-  const R=ref=>{if(!ref||EXT.test(ref))return null;const p=resolve(main,ref);if(files[p])return p;const q=norm(ref.replace(/^\//,''));const pq=norm(root+'/public/'+q);return files[q]?q:(files[pq]?pq:null)};
+  const R=ref=>{if(!ref||EXT.test(ref))return null;return findAsset(main,ref)};
 
   let srcJs=[...doc.querySelectorAll('script[src]')].map(x=>x.getAttribute('src')).find(u=>/\.(tsx?|jsx|vue|svelte)(\?|$)/i.test(u));
   if(!srcJs){for(const x of doc.querySelectorAll('script[type="module"][src]')){const q=R(x.getAttribute('src'));if(q&&/(^|\n)\s*(import|export)\s[^\n]*['"](\.|@\/)/.test(await files[q].async('string'))){srcJs=x.getAttribute('src');break}}}
@@ -409,14 +421,27 @@ async function convert(file){
   for(const el of [...doc.querySelectorAll('[src],[poster],link[rel~="icon"][href],link[rel~="preload"][href]')]){
    if(el.tagName==='SCRIPT')continue;
    for(const a of ['src','poster','href']){const v=el.getAttribute(a);if(!v)continue;const p=R(v);if(p){const d=await dataURI(p);if(d)el.setAttribute(a,d)}else if(!EXT.test(v)&&a!=='href')warns.push(v)}}
+  for(const el of [...doc.querySelectorAll('[data-src],[data-bg],[data-background],[data-image],[data-lazy],[data-original],object[data],image,link[rel*="icon"][href]')]){
+   for(const a of ['data-src','data-bg','data-background','data-image','data-lazy','data-original','data','href','xlink:href']){const v=el.getAttribute(a);if(!v||EXT.test(v))continue;if(a==='href'&&el.tagName!=='image'&&el.tagName!=='LINK')continue;const p=R(v);if(p&&/\.(png|jpe?g|gif|webp|svg|ico|avif)$/i.test(p)){const d=await dataURI(p);if(d)el.setAttribute(a,d+((v.match(/#.*$/)||[''])[0]))}}}
+  {const sprites=new Map();let holder=null;
+   for(const u of [...doc.querySelectorAll('use')]){
+    for(const a of ['href','xlink:href']){const v=u.getAttribute(a);if(!v||v.startsWith('#')||EXT.test(v))continue;
+     const p=R(v);if(!p||!/\.svg$/i.test(p))continue;const id=(v.match(/#(.+)$/)||[])[1];if(!id)continue;
+     if(!sprites.has(p)){const sd=new DOMParser().parseFromString(await files[p].async('string'),'image/svg+xml');const root2=sd.documentElement;
+      if(!holder){holder=doc.createElementNS('http://www.w3.org/2000/svg','svg');holder.setAttribute('style','display:none');holder.setAttribute('aria-hidden','true');doc.body.insertBefore(holder,doc.body.firstChild)}
+      for(const ch of [...root2.children]){if(/^(symbol|defs|g|linearGradient|radialGradient|clipPath|mask|pattern)$/i.test(ch.localName))holder.appendChild(doc.importNode(ch,true))}
+      sprites.set(p,1);inl++;log('SVG sprite → '+p)}
+     u.setAttribute(a,'#'+id)}}}
   for(const el of doc.querySelectorAll('[srcset]')){const parts=[];for(const part of el.getAttribute('srcset').split(',')){const [u,...r]=part.trim().split(/\s+/);const p=R(u);const d=p&&await dataURI(p);parts.push([d||u,...r].join(' '))}el.setAttribute('srcset',parts.join(', '))}
 
   setStep(5);await sleep(400);
   {
    const V={},pre=root?root+'/':'';let tot=0;
-   for(const p of Object.keys(files)){
-    if(!/\.(png|jpe?g|gif|webp|svg|ico|avif|mp3|wav|ogg|mp4|webm|json|txt|csv|woff2?|ttf|otf)$/i.test(p)||/(^|\/)(node_modules|package(-lock)?\.json$|tsconfig[^\/]*\.json$)/.test(p)||cache.has(p)||(pre&&!p.startsWith(pre)))continue;
-    const d=await dataURI(p);if(!d)continue;if((tot+=d.length)>24e6){log('Virtual files limit reached',1);break}V[p.slice(pre.length)]=d}
+   const jsText=[...doc.querySelectorAll('script')].map(x=>x.textContent).join('\n')+(extra?extra.script:'');
+   const prio=p=>/\.(png|jpe?g|gif|webp|svg|ico|avif)$/i.test(p)?0:/\.(woff2?|ttf|otf)$/i.test(p)?1:/\.(json|txt|csv)$/i.test(p)?2:3;
+   for(const p of Object.keys(files).sort((a,b)=>prio(a)-prio(b))){
+    if(!/\.(png|jpe?g|gif|webp|svg|ico|avif|mp3|wav|ogg|mp4|webm|json|txt|csv|woff2?|ttf|otf)$/i.test(p)||/(^|\/)(node_modules|package(-lock)?\.json$|tsconfig[^\/]*\.json$)/.test(p)||(cache.has(p)&&!jsText.includes(p.split('/').pop()))||(pre&&!p.startsWith(pre)))continue;
+    const d=await dataURI(p);if(!d)continue;if((tot+=d.length)>24e6){tot-=d.length;log('Virtual files limit: skipped '+p,1);continue}V[p.slice(pre.length)]=d}
    const n=Object.keys(V).length;
    if(n){log('Virtual files for JS-loaded assets: '+n);
     doc.head.insertBefore(Object.assign(doc.createElement('script'),{textContent:'('+vfsShim.toString()+')('+JSON.stringify(V)+');'}),doc.head.firstChild)}
